@@ -8,6 +8,7 @@ Created on Mon Oct 17 12:00:00 2016
 ---------------
 Changelog
 Current:
+ - Speed up calculation by numpy operations
  - Calculation of 2theta considering tilt/rot fit2d convention
  - Reading EDF and INP files. IntegOpts.
 
@@ -17,7 +18,7 @@ TODO:
 
 import numpy as np
 import os, time, datetime
-import argparse  
+import argparse
 import struct
 import logging as log
 import matplotlib.pyplot as plt
@@ -28,6 +29,8 @@ class EDFdata:
         self.dimx = None    # cols
         self.dimy = None    # rows
         self.intenXY = None   # np array inten [y][x] (for matplotlib)
+        self.t2XY = None   #np array of t2
+        self.distPixZ = None
         self.pixSXmm = 0.079
         self.pixSYmm = 0.079
         self.distMDmm = 180
@@ -38,7 +41,7 @@ class EDFdata:
         
     def readFile(self, edfFilename):
         """Reads a EDF file and populates the data"""
-        
+        t0 = time.time()        
         fedf = open(edfFilename,'r')
         self.filename = fedf.name
         size = -1
@@ -67,24 +70,23 @@ class EDFdata:
                     self.dimy = int(line[iigual+1:len(line)-2])
                     log.debug("Dim_2="+str(self.dimy))
                 if line.startswith("beam_center_x"):
-                    self.xcen = int(line[iigual+1:len(line)-2])
+                    self.xcen = float(line[iigual+1:len(line)-2])
                     log.debug("beam_center_x="+str(self.xcen))
                 if line.startswith("beam_center_y"):
-                    self.ycen = int(line[iigual+1:len(line)-2])
+                    self.ycen = float(line[iigual+1:len(line)-2])
                     log.debug("beam_center_y="+str(self.ycen))
                 if line.startswith("pixelsize_x"):
-                    self.pixSXmm = int(line[iigual+1:len(line)-2])/1000.
+                    self.pixSXmm = float(line[iigual+1:len(line)-2])/1000.
                     log.debug("pixelsize_x="+str(self.pixSXmm))
                 if line.startswith("pixelsize_y"):
-                    self.pixSYmm = int(line[iigual+1:len(line)-2])/1000.
+                    self.pixSYmm = float(line[iigual+1:len(line)-2])/1000.
                     log.debug("pixelsize_y="+str(self.pixSYmm))
                 if line.startswith("ref_distance"):
-                    self.distMDmm = int(line[iigual+1:len(line)-2])
+                    self.distMDmm = float(line[iigual+1:len(line)-2])
                     log.debug("ref_distance="+str(self.distMDmm))
                 if line.startswith("ref_wave"):
-                    self.wavelA = int(line[iigual+1:len(line)-2])
+                    self.wavelA = float(line[iigual+1:len(line)-2])
                     log.debug("ref_wave="+str(self.wavelA))
-                
                 lcount=lcount+1
         finally:
             log.debug("finally executed")
@@ -98,6 +100,8 @@ class EDFdata:
         
         fedf = open(edfFilename, "rb")
         self.intenXY = np.empty([self.dimx,self.dimy])
+        self.t2XY = np.empty([self.dimx,self.dimy])
+        self.distPixZ = np.empty([self.dimx,self.dimy])
         row = []
         header = fedf.read(headersize)
         log.info(header)
@@ -109,6 +113,7 @@ class EDFdata:
                 log.debug(self.intenXY[x])
         finally:
             fedf.close()
+        print (" EDF reading: %.4f sec"%(time.time() - t0))
 
 class IntegOptions:
     def __init__(self):
@@ -134,7 +139,8 @@ class IntegOptions:
         self.sintilt = None
         self.cosrot = None
         self.sinrot = None
-
+        self.distPix = None
+        
         self.dist = None
         self.x0 = None
         self.phi = None
@@ -190,11 +196,12 @@ class IntegOptions:
             log.debug("finally executed")
             finp.close()
         
-        # calculation here to speed up the process
-        self.costilt = math.cos(math.radians(integOpts.angleTilt))
-        self.sintilt = math.sin(math.radians(integOpts.angleTilt))
-        self.cosrot = math.cos(math.radians(integOpts.tiltRotation))
-        self.sinrot = math.sin(math.radians(integOpts.tiltRotation))
+        #calculation here to speed up the process
+        self.costilt = math.cos(math.radians(self.angleTilt))
+        self.sintilt = math.sin(math.radians(self.angleTilt))
+        self.cosrot = math.cos(math.radians(self.tiltRotation))
+        self.sinrot = math.sin(math.radians(self.tiltRotation))
+        self.distPix = (self.distMDmm/0.079)/self.costilt
 
         self.rotM_rotZ = np.array(([self.cosrot,-self.sinrot,0.0],[self.sinrot,self.cosrot,0.0],[0.0,0.0,1.0]),dtype=np.float32)
         self.rotM_tiltX = np.array(([1.0,1.0,0.0],[0.0,self.costilt,-self.sintilt],[0.0,self.sintilt,self.costilt]),dtype=np.float32)
@@ -219,53 +226,35 @@ def calc2tDeg(integOpts, edfdata, rowY,colX):
     vPCx=(float)(colX)-integOpts.xcen
     vPCy=integOpts.ycen-(float)(rowY)
     
-    sum1 = ((vPCx*cosrot + vPCy*sinrot)*(vPCx*cosrot + vPCy*sinrot))+((vPCy*cosrot - vPCx*sinrot)*(vPCy*cosrot - vPCx*sinrot))
-    num = costilt*costilt*sum1
-    den = (integOpts.distMDmm/edfdata.pixSXmm) + sintilt*(vPCx*cosrot+vPCy*sinrot)
-    t2p = math.atan(math.sqrt(num/(den*den)))
+    zcomponent = (-vPCx*sinrot + vPCy*cosrot)*(-sintilt)
+    tiltedVecMod = math.sqrt(vPCx**2+vPCy**2-zcomponent**2)
+    t2p = math.atan(tiltedVecMod/(integOpts.distPix-zcomponent))
     
     return math.degrees(t2p)
 
-
-
-def calc2tDegF2D(integOpts, edfdata, rowY,colX):
-    
-    costilt = integOpts.costilt
-    sintilt = integOpts.sintilt
-    cosrot = integOpts.cosrot
-    sinrot = integOpts.sinrot
-    
-    # vector centre-pixel
-    vPCx=colX-integOpts.xcen;
-    vPCy=integOpts.ycen-rowY;
-    
-    num = costilt*costilt*((vPCx*cosrot+vPCy*sinrot)*(vPCx*cosrot+vPCy*sinrot))+((vPCy*cosrot-vPCx*sinrot)*(vPCy*cosrot-vPCx*sinrot))
-    den = (integOpts.distMDmm/edfdata.pixSXmm) + sintilt*(vPCx*cosrot+vPCy*sinrot)
-    t2p = math.atan(math.sqrt(num/(den*den)))
-    
-    return math.degrees(t2p)
-
-
-def calc2tGS(integOpts, edfdata, rowY,colX):
-    
-    costilt = integOpts.costilt
-    sintilt = integOpts.sintilt
-    cosrot = integOpts.cosrot
-    sinrot = integOpts.sinrot
-
-    # vector centre-pixel
-    vPCx=colX-integOpts.xcen
-    vPCy=integOpts.ycen-rowY
-    
-    vPCx = np.array(colX-integOpts.xcen,dtype=np.float32)
-    vPCy = np.array(integOpts.ycen-rowY,dtype=np.float32)
-    X = np.array(([vPCx,vPCy,0.0]),dtype=np.float32).T
-    X = np.dot(X,integOpts.rotM_rotZ)
-    Z = np.dot(X,integOpts.rotM_tiltX).T[2]
-    tth = math.atan(np.sqrt(vPCx**2+vPCy**2-Z**2)/(integOpts.distT-Z))
-    
-    return math.degrees(tth)
-
+#trying to speed up using numpy operations
+def calc2tDegFull(integOpts, edfdata):
+    #first fill up an array of vPCx**2+vPCy**2-zcomponent**2
+    t0 = time.time()
+    for y in range(edfdata.dimy):
+        for x in range(edfdata.dimx):
+            vPCx=(float)(x)-integOpts.xcen
+            vPCy=integOpts.ycen-(float)(y)
+            zcomponent = (-vPCx*integOpts.sinrot + vPCy*integOpts.cosrot)*(-integOpts.sintilt)
+            edfdata.t2XY[y][x]= vPCx**2+vPCy**2-zcomponent**2
+            edfdata.distPixZ[y][x]=integOpts.distPix-zcomponent
+    print (" zcomp calculation: %.4f sec"%(time.time() - t0))
+    t0 = time.time()
+    #now the square root
+    edfdata.t2XY = np.sqrt(edfdata.t2XY)
+    print (" sqrt calculation: %.4f sec"%(time.time() - t0))
+    t0 = time.time()
+    #now the arctan
+    edfdata.t2XY = edfdata.t2XY/edfdata.distPixZ
+    print (" Division calculation: %.4f sec"%(time.time() - t0))
+    t0 = time.time()
+    edfdata.t2XY = np.degrees(np.arctan(edfdata.t2XY))
+    print (" atan calculation: %.4f sec"%(time.time() - t0))
 
 def makeMat(Angle,Axis):
     '''Make rotation matrix from Angle and Axis
@@ -373,12 +362,17 @@ if __name__=="__main__":
         patt.Iobs.append(0)
         patt.npix.append(0)
     
-    integOpts.distT = (integOpts.distMDmm/edf.pixSXmm)/integOpts.costilt
+    #integOpts.distT = (integOpts.distMDmm/edf.pixSXmm)/integOpts.costilt
+    
+    calc2tDegFull(integOpts,edf)
+    
+    t0 = time.time()
 
     for y in range(edf.dimy):
         for x in range(edf.dimx):
             #TODO: check for excluded zones
-            t2p = calc2tGS(integOpts, edf, y,x)
+            #t2p = calc2tDeg(integOpts, edf, y,x)
+            t2p = edf.t2XY[y,x]
             if (t2p>t2in) and (t2p<t2fin):
                 #position to the vector
                 p = (int)(t2p/step + 0.5)-(int)(t2in/step + 0.5)
@@ -389,6 +383,8 @@ if __name__=="__main__":
                 patt.npix[p] = patt.npix[p] + 1
         #print "line %d"%y
     
+    print (" histogram filling: %.4f sec"%(time.time() - t0))
+
     #write a xy file
     fout = open("test.xy", 'w')
     fout.write("#TEST PATTERN \n")
