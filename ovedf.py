@@ -66,8 +66,24 @@ class EDFdata:
                 if line.startswith("Dim_2"):
                     self.dimy = int(line[iigual+1:len(line)-2])
                     log.debug("Dim_2="+str(self.dimy))
-                
-                #TODO: ADD EVERYTHING
+                if line.startswith("beam_center_x"):
+                    self.xcen = int(line[iigual+1:len(line)-2])
+                    log.debug("beam_center_x="+str(self.xcen))
+                if line.startswith("beam_center_y"):
+                    self.ycen = int(line[iigual+1:len(line)-2])
+                    log.debug("beam_center_y="+str(self.ycen))
+                if line.startswith("pixelsize_x"):
+                    self.pixSXmm = int(line[iigual+1:len(line)-2])/1000.
+                    log.debug("pixelsize_x="+str(self.pixSXmm))
+                if line.startswith("pixelsize_y"):
+                    self.pixSYmm = int(line[iigual+1:len(line)-2])/1000.
+                    log.debug("pixelsize_y="+str(self.pixSYmm))
+                if line.startswith("ref_distance"):
+                    self.distMDmm = int(line[iigual+1:len(line)-2])
+                    log.debug("ref_distance="+str(self.distMDmm))
+                if line.startswith("ref_wave"):
+                    self.wavelA = int(line[iigual+1:len(line)-2])
+                    log.debug("ref_wave="+str(self.wavelA))
                 
                 lcount=lcount+1
         finally:
@@ -180,13 +196,8 @@ class IntegOptions:
         self.cosrot = math.cos(math.radians(integOpts.tiltRotation))
         self.sinrot = math.sin(math.radians(integOpts.tiltRotation))
 
-        self.dist = (integOpts.distMDmm/edfdata.pixSXmm)/costilt
-        self.x0 = (integOpts.distMDmm/edfdata.pixSXmm)*math.tan(math.radians(integOpts.angleTilt))
-        self.phi = math.radians(integOpts.tiltRotation)
-        self.tilt = math.radians(integOpts.angleTilt)
-
-        self.matTilt = makeMat(self.tilt,0)
-        self.matPhi = makeMat(self.phi,2)
+        self.rotM_rotZ = np.array(([self.cosrot,-self.sinrot,0.0],[self.sinrot,self.cosrot,0.0],[0.0,0.0,1.0]),dtype=np.float32)
+        self.rotM_tiltX = np.array(([1.0,1.0,0.0],[0.0,self.costilt,-self.sintilt],[0.0,self.sintilt,self.costilt]),dtype=np.float32)
         
 class D1Pattern:
     def __init__(self):
@@ -246,17 +257,12 @@ def calc2tGS(integOpts, edfdata, rowY,colX):
     vPCx=colX-integOpts.xcen
     vPCy=integOpts.ycen-rowY
     
-    dx = np.array(colX-integOpts.xcen,dtype=np.float32)
-    dy = np.array(integOpts.ycen-rowY,dtype=np.float32)
-    D = ((dx-integOpts.x0)**2+dy**2+(integOpts.distMDmm/edfdata.pixSXmm)**2)      # sample to pixel distance
-    X = np.array(([dx,dy,np.zeros_like(dx)]),dtype=np.float32).T
-    X = np.dot(X,integOpts.matPhi)
-    Z = np.dot(X,integOpts.matTilt).T[2]
-    tth = math.atan(np.sqrt(dx**2+dy**2-Z**2)/(integOpts.dist-Z))
-    dxy = 0
-    DX = integOpts.dist-Z+dxy
-    DY = np.sqrt(dx**2+dy**2-Z**2)
-    tth = math.atan2(DY,DX) 
+    vPCx = np.array(colX-integOpts.xcen,dtype=np.float32)
+    vPCy = np.array(integOpts.ycen-rowY,dtype=np.float32)
+    X = np.array(([vPCx,vPCy,0.0]),dtype=np.float32).T
+    X = np.dot(X,integOpts.rotM_rotZ)
+    Z = np.dot(X,integOpts.rotM_tiltX).T[2]
+    tth = math.atan(np.sqrt(vPCx**2+vPCy**2-Z**2)/(integOpts.distT-Z))
     
     return math.degrees(tth)
 
@@ -367,6 +373,8 @@ if __name__=="__main__":
         patt.Iobs.append(0)
         patt.npix.append(0)
     
+    integOpts.distT = (integOpts.distMDmm/edf.pixSXmm)/integOpts.costilt
+
     for y in range(edf.dimy):
         for x in range(edf.dimx):
             #TODO: check for excluded zones
@@ -379,7 +387,7 @@ if __name__=="__main__":
                 inten = edf.intenXY[y][x]
                 patt.Iobs[p] = patt.Iobs[p] + inten - (int)(integOpts.subadu)
                 patt.npix[p] = patt.npix[p] + 1
-        print "line %d"%y
+        #print "line %d"%y
     
     #write a xy file
     fout = open("test.xy", 'w')
