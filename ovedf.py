@@ -7,14 +7,19 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current:
- - Added PD lorentz correction
+Current (last change 161019 19.15h):
+ - Azimuth range, bins
+ - Added PD lorentz correction (at the writting of the dat file)
  - Speed up calculation by numpy operations
  - Calculation of 2theta considering tilt/rot fit2d convention
  - Reading EDF and INP files. IntegOpts.
 
 TODO:
- - 
+ - xbin, ybin, azimbins, masks
+ - geometrical corrections needed?
+ - esd
+ - support for multiple files (batch). It is easy but for testing I 
+   prefer to keep 1 argument (image) only
 """
 
 import numpy as np
@@ -40,7 +45,6 @@ class EDFdata:
         
         self.t2XY = None   #np array of t2
         self.azim = None
-#        self.distPixZ = None  #np array of distances (z corrected)
         self.lorfac = None  #np array of lorentz factors
 
     def readFile(self, edfFilename):
@@ -107,7 +111,6 @@ class EDFdata:
         self.intenXY = np.empty([self.dimx,self.dimy])
         self.t2XY = np.empty([self.dimx,self.dimy])
         self.azim = np.empty([self.dimx,self.dimy])
-#        self.distPixZ = np.empty([self.dimx,self.dimy])
         self.lorfac = np.empty([self.dimx,self.dimy])
                 
         fedf = open(edfFilename, "rb")
@@ -148,7 +151,6 @@ class IntegOptions:
         self.sintilt = None
         self.cosrot = None
         self.sinrot = None
-        self.distPix = None
         
         self.dist = None
         self.x0 = None
@@ -213,26 +215,6 @@ class IntegOptions:
                     log.debug("RADIAL BINS="+str(self.radialBins))
                 #TODO MASK
 
-#X-BEAM CENTRE =  1023.722 ; 
-#Y-BEAM CENTRE =   1024.044  ; 
-#DISTANCE = 181.629000 ;
-#WAVELENGTH =  0.318700 ; 
-#TILT ROTATION = -44.900000 ; 
-#ANGLE OF TILT = 1.338000 ;
-# 
-#SUBADU = -9.5;
-#XBIN = 1 ;
-#YBIN = 1 ;
-# 
-#START AZIMUTH =-130.;
-#END AZIMUTH =215.0;
-#INNER RADIUS = 0.;
-#OUTER RADIUS = 1000;
-#AZIMUTH BINS = 1;
-#RADIAL BINS = 1000;
-# 
-##MASK = ;
-
         finally:
             log.debug("finally executed")
             finp.close()
@@ -242,7 +224,6 @@ class IntegOptions:
         self.sintilt = math.sin(math.radians(self.angleTilt))
         self.cosrot = math.cos(math.radians(self.tiltRotation))
         self.sinrot = math.sin(math.radians(self.tiltRotation))
-        self.distPix = (self.distMDmm/0.079)/self.costilt #TODO FIX
         
 class D1Pattern:
     def __init__(self):
@@ -259,6 +240,7 @@ def calc2tDeg(integOpts, edfdata, rowY,colX):
     sintilt = integOpts.sintilt
     cosrot = integOpts.cosrot
     sinrot = integOpts.sinrot
+    distPix = (integOpts.distMDmm/edfdata.pixSXmm)/integOpts.costilt
     
     # vector centre-pixel
     vPCx=(float)(colX)-integOpts.xcen
@@ -266,27 +248,23 @@ def calc2tDeg(integOpts, edfdata, rowY,colX):
     
     zcomponent = (-vPCx*sinrot + vPCy*cosrot)*(-sintilt)
     tiltedVecMod = math.sqrt(vPCx**2+vPCy**2-zcomponent**2)
-    t2p = math.atan(tiltedVecMod/(integOpts.distPix-zcomponent))
+    t2p = math.atan(tiltedVecMod/(distPix-zcomponent))
     
     return math.degrees(t2p)
 
 def getAzim(integOpts,edfdata,rowY,colX):
-    if rowY == int(edfdata.ceny+0.5) and colX == int(edfdata.cenx+0.5): return 0
+    if rowY == int(edfdata.ycen+0.5) and colX == int(edfdata.xcen+0.5): return 0
     
     #vector centre-pixel
-    vPCx=(float)(colX)-integOpts.xcen
-    vPCy=integOpts.ycen-(float)(rowY)
-    #horizontal vector
-    horX = 1.0
-    horY = 0.0
+    vCPx=(float)(colX)-integOpts.xcen
+    vCPy=integOpts.ycen-(float)(rowY)
     
-    #angle
-    dot = vPCx*horX + vPCy*horY
-    det = vPCx*horY - vPCy*horX
-    azim = math.atan2(det,dot)
+    #angle --- NOW is defined FROM 12h clockwise +
+    azim = np.atan2(vCPx,vCPy)
     
-    if (azim<0): azim = azim + 2*math.PI
+    if (azim<0): azim = azim + 2*math.pi
     return math.degrees(azim)
+
 
 
 def calc2tDegFull(integOpts, edfdata): #and azimuth
@@ -297,9 +275,7 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     vCPx = np.empty([edfdata.dimx,edfdata.dimy])
     vCPy = np.empty([edfdata.dimx,edfdata.dimy])
     vCPz = np.empty([edfdata.dimx,edfdata.dimy])
-    
-    #ho podria fer tot amb 3 arrays VPCxyz?
-    
+    distPix = (integOpts.distMDmm/edfdata.pixSXmm)/integOpts.costilt    
     #horizontal vector (for the azimuth)
     horX = 1.0
     horY = 0.0
@@ -320,16 +296,17 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     
     #now the arctan
     t0 = time.time()
-    edfdata.t2XY = edfdata.t2XY/ (integOpts.distPix-vCPz)
+    edfdata.t2XY = edfdata.t2XY/ (distPix-vCPz)
     edfdata.t2XY = np.arctan(edfdata.t2XY)
     log.info(" atan calculation: %.4f sec"%(time.time() - t0))
     
     #TODO: GEOM CORRECTIONS (Lorentz,...)
-    #t0 = time.time()
+    t0 = time.time()
     #edfdata.lorfac = 1/((np.sin(edfdata.t2XY))*((np.sin(edfdata.t2XY/2))))
     #edfdata.lorfac = 1/((np.cos(edfdata.t2XY/2))*((np.sin(edfdata.t2XY/2))**2))
     #edfdata.lorfac = ((np.sin(edfdata.t2XY))**2)/((np.cos(edfdata.t2XY/2)))
-    #log.info(" lorfac calculation: %.4f sec"%(time.time() - t0))
+    #edfdata.lorfac = 1/((np.cos(edfdata.t2XY))**2)
+    log.info(" lorfac calculation: %.4f sec"%(time.time() - t0))
     
     #t2 to degrees
     t0 = time.time()
@@ -339,13 +316,13 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     #Azim calc
     t0 = time.time()
     edfdata.azim = np.degrees(np.arctan2(vCPx,vCPy))
-    log.debug(" 10 10 azim = %.2f deg"%(edfdata.azim.item(10,10)))
+    log.debug(" (y,x)=1200,1200 azim = %.2f deg"%(edfdata.azim.item(1200,1200)))
     edfdata.azim=np.where(edfdata.azim < 0, edfdata.azim+360,edfdata.azim)
     log.info(" azim calculation: %.4f sec"%(time.time() - t0))
-    log.debug(" (y,x)=10 10 azim = %.2f deg"%(edfdata.azim.item(10,10)))
-    log.debug(" (y,x)=10 -10 azim = %.2f deg"%(edfdata.azim.item(10,-10)))
-    log.debug(" (y,x)=-10 10 azim = %.2f deg"%(edfdata.azim.item(-10,10)))
-    log.debug(" (y,x)=-10 -10 azim = %.2f deg"%(edfdata.azim.item(-10,-10)))
+    log.debug(" (y,x)=1200,1200 azim = %.2f deg"%(edfdata.azim.item(1200,1200)))
+    log.debug(" (y,x)=1200,800 azim = %.2f deg"%(edfdata.azim.item(1200,800)))
+    log.debug(" (y,x)=800,1200 azim = %.2f deg"%(edfdata.azim.item(800,1200)))
+    log.debug(" (y,x)=800,800 azim = %.2f deg"%(edfdata.azim.item(800,800)))
 
 
 ######################################################## MAIN PROGRAM
@@ -384,24 +361,7 @@ if __name__=="__main__":
     edf = EDFdata()
     edf.readFile(args.filename[0])
 
-    # IN CASE WE WANT TO PLOT THE IMAGE
-    if (args.plot):
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        plt.imshow(edf.intenXY)
-        plt.colorbar()
-        numrows, numcols = edf.intenXY.shape
-        def format_coord(x, y):
-            col = int(x+0.5)
-            row = int(y+0.5)
-            if col>=0 and col<numcols and row>=0 and row<numrows:
-                z = edf.intenXY[row,col]
-                return 'col_x=%.1f, row_y=%.1f, Intensity=%d'%(x, y, z)
-            else:
-                return 'col_x=%.1f, row_y=%.1f'%(x, y)
-        ax.format_coord = format_coord
-        plt.show()
-    
+
     # NOW READ THE OPTIONS
     integOpts = IntegOptions()
     if args.input is not None:
@@ -418,7 +378,7 @@ if __name__=="__main__":
             integOpts.wavelA = edf.wavelA
 
     
-    # NOW WE SHOULD INTEGRATE
+    # NOW WE INTEGRATE
     
     #Integration options
     t2in = calc2tDeg(integOpts, edf, edf.ycen,edf.xcen+integOpts.inRadi)
@@ -427,14 +387,25 @@ if __name__=="__main__":
     size = (int)(integOpts.radialBins)
     step = (t2fin-t2in)/size
     
+    #put start and end azim in range 0-360 starting at 12o'clock direction clockwise !!
+    #Inserted as fit2d 3o'clock=zero and positive clockwise (because it is y inverted!)
+    startAzim = integOpts.startAzim
+    if (startAzim < 0): startAzim = startAzim + 360
+    endAzim = integOpts.endAzim
+    if (endAzim < 0): endAzim = endAzim + 360
+    #now +90 to put at 12 (remember + clockwise)
+    startAzim = startAzim +90
+    endAzim = endAzim +90
+
     log.info("t2in=%f t2f=%f size=%d step=%f"%(t2in,t2fin,size,step))
     
     print ""
     print "Integration parameters and options:"
-    print "Center X,Y = %.3f %.3f"%(integOpts.xcen,integOpts.ycen)
-    print "Distance Wavelengh = %.3f %.4f"%(integOpts.distMDmm,integOpts.wavelA)
-    print "tiltRot AngTilt = %.3f %.3f"%(integOpts.tiltRotation,integOpts.angleTilt)
-    print "t2ini t2end step = %.4f %.4f %.4f"%(t2in,t2fin,step)
+    print " Center X,Y = %.3f %.3f"%(integOpts.xcen,integOpts.ycen)
+    print " Distance Wavelengh = %.3f %.4f"%(integOpts.distMDmm,integOpts.wavelA)
+    print " tiltRot AngTilt = %.3f %.3f"%(integOpts.tiltRotation,integOpts.angleTilt)
+    print " t2ini t2end step = %.4f %.4f %.4f"%(t2in,t2fin,step)
+    print " startAzim endAzim = %.4f %.4f (ref. 12h CW+ %.4f %.4f)"%(integOpts.startAzim,integOpts.endAzim,startAzim,endAzim)
     print ""    
         
     patt = D1Pattern()
@@ -446,6 +417,29 @@ if __name__=="__main__":
         patt.npix.append(0)
     
     calc2tDegFull(integOpts,edf)
+
+    #IN CASE WE WANT TO PLOT THE IMAGE (I moved it after calculations)
+    if (args.plot):
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        plt.imshow(edf.intenXY)
+        plt.colorbar()
+        numrows, numcols = edf.intenXY.shape
+        def format_coord(x, y):
+            col = int(x+0.5)
+            row = int(y+0.5)
+            if col>=0 and col<numcols and row>=0 and row<numrows:
+                inten = edf.intenXY.item(row,col)
+                #t2 = calc2tDeg(integOpts, edf, row,col)
+                #azim = getAzim(integOpts,edf,row,col)
+                t2 = edf.t2XY.item(row,col)
+                azim = edf.azim.item(row,col)
+                return 'col_x=%.1f, row_y=%.1f, Intensity=%d, t2=%.3f, azim=%.2f'%(x, y, inten,t2,azim)
+            else:
+                return 'col_x=%.1f, row_y=%.1f'%(x, y)
+        ax.format_coord = format_coord
+        plt.show()
+
     t0 = time.time()
 
     #TODO: APPLY GEOM CORRECTIONS HERE
@@ -458,8 +452,10 @@ if __name__=="__main__":
             #TODO: check for excluded zones
  
             azim = edf.azim.item(y,x)
-            if (azim < integOpts.startAzim):continue
-            if (azim > integOpts.endAzim):continue
+            if (endAzim<startAzim):
+                if (azim < startAzim) and (azim > endAzim): continue
+            else:
+                if (azim < startAzim) or (azim > endAzim): continue
             
             t2p = edf.t2XY.item(y,x)
             if (t2p<t2in):continue
@@ -469,7 +465,7 @@ if __name__=="__main__":
             p = (int)(t2p/step + 0.5)-(int)(t2in/step + 0.5)
             
             inten = edf.intenXY.item(y,x)
-            patt.Iobs[p] = patt.Iobs[p] + inten - (int)(integOpts.subadu)
+            patt.Iobs[p] = patt.Iobs[p] + inten + integOpts.subadu
             patt.npix[p] = patt.npix[p] + 1
     
     log.info(" histogram filling: %.4f sec"%(time.time() - t0))
@@ -478,9 +474,11 @@ if __name__=="__main__":
     #TODO: HEADER
     fout = open("test.dat", 'w')
     fout.write("#TEST PATTERN \n")
-    for i in range(size):
+    for i in range(size+1):
         if patt.npix[i] <= 0:continue
-        #fout.write(" %.5f %5f %5f\n"%(patt.t2[i], (patt.Iobs[i]/patt.npix[i]), math.sqrt(patt.Iobs[i])/patt.npix[i]))
-        fout.write(" %.5f %5f %5f\n"%(patt.t2[i], (patt.Iobs[i]/patt.npix[i])*(1/math.cos(math.radians(patt.t2[i]))), math.sqrt(patt.Iobs[i])/patt.npix[i]))
+        lorfact = (1./((math.cos(math.radians(patt.t2[i])))**2))
+        icorr = patt.Iobs[i] * lorfact
+        if (icorr<0): icorr = 0
+        fout.write(" %.5f %5f %5f\n"%(patt.t2[i], icorr/patt.npix[i], math.sqrt(icorr)/patt.npix[i]))
     fout.close()
     log.info("dat file written")
