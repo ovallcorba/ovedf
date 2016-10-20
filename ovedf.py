@@ -7,7 +7,7 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current (last change 161019 19.15h):
+Current (last change 161020 14.45h):
  - Azimuth range, bins
  - Added PD lorentz correction (at the writting of the dat file)
  - Speed up calculation by numpy operations
@@ -18,8 +18,10 @@ TODO:
  - xbin, ybin, azimbins, masks
  - geometrical corrections needed?
  - esd
+ - DAT Header as in ffops generated files
  - support for multiple files (batch). It is easy but for testing I 
-   prefer to keep 1 argument (image) only
+   prefer to keep 1 argument (image) only (useful for output file option)
+
 """
 
 import numpy as np
@@ -45,8 +47,7 @@ class EDFdata:
         
         self.t2XY = None   #np array of t2
         self.azim = None
-        self.lorfac = None  #np array of lorentz factors
-
+        self.gcorr = None  #np array of geometrical corrections (not used right now...)
     def readFile(self, edfFilename):
         """Reads a EDF file and populates the data"""
         t0 = time.time()        
@@ -58,8 +59,8 @@ class EDFdata:
         try:
             for line in fedf:
                 if lcount>=maxheaderLines:break
-                if line.startswith("}"):break  # end of header
-                
+                if line.strip().startswith("}"):break  #end of header
+
                 log.debug(line)
                 try:
                     iigual = line.index("=")
@@ -111,8 +112,8 @@ class EDFdata:
         self.intenXY = np.empty([self.dimx,self.dimy])
         self.t2XY = np.empty([self.dimx,self.dimy])
         self.azim = np.empty([self.dimx,self.dimy])
-        self.lorfac = np.empty([self.dimx,self.dimy])
-                
+        self.gcorr = np.empty([self.dimx,self.dimy])
+
         fedf = open(edfFilename, "rb")
         row = []
         header = fedf.read(headersize)
@@ -121,7 +122,6 @@ class EDFdata:
             for y in range(self.dimy):
                 for x in range(self.dimx):
                     self.intenXY[y,x] =  struct.unpack("<H",fedf.read(2))[0] #edf I as unsigned short little endian
-                log.debug(self.intenXY[x])
         finally:
             fedf.close()
         log.info(" EDF reading: %.4f sec"%(time.time() - t0))
@@ -135,6 +135,7 @@ class IntegOptions:
         self.wavelA = -1.0
         self.tiltRotation = 0.0
         self.angleTilt = 0.0
+        self.tiltRotationIN = 0.0
         self.subadu = 0.0
         self.startAzim = 0
         self.endAzim = 360
@@ -181,8 +182,8 @@ class IntegOptions:
                     self.wavelA = float(line[iigual+1:ipcoma].strip())
                     log.debug("WAVELENGTH="+str(self.wavelA))
                 if line.startswith("TILT"):
-                    self.tiltRotation = float(line[iigual+1:ipcoma].strip())
-                    log.debug("TILT ROTATION="+str(self.tiltRotation).strip())
+                    self.tiltRotationIN = float(line[iigual+1:ipcoma].strip())
+                    log.debug("TILT ROTATION="+str(self.tiltRotationIN).strip())
                 if line.startswith("ANGLE"):
                     self.angleTilt = float(line[iigual+1:ipcoma].strip())
                     log.debug("ANGLE OF TILT="+str(self.angleTilt).strip())
@@ -218,7 +219,12 @@ class IntegOptions:
         finally:
             log.debug("finally executed")
             finp.close()
-        
+
+        #rot convention from fit2d (0 at 3 CW+ when corrected flip H) to 0 at 12h CW-
+        self.tiltRotation = (-1)*(self.tiltRotationIN) - 90
+        if (self.tiltRotation<=-180):
+            self.tiltRotation = self.tiltRotation%180
+
         #calculation here to speed up the process
         self.costilt = math.cos(math.radians(self.angleTilt))
         self.sintilt = math.sin(math.radians(self.angleTilt))
@@ -259,7 +265,7 @@ def getAzim(integOpts,edfdata,rowY,colX):
     vCPx=(float)(colX)-integOpts.xcen
     vCPy=integOpts.ycen-(float)(rowY)
     
-    #angle --- NOW is defined FROM 12h clockwise +
+    #angle --- defined FROM 12h clockwise +
     azim = np.atan2(vCPx,vCPy)
     
     if (azim<0): azim = azim + 2*math.pi
@@ -275,7 +281,7 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     vCPx = np.empty([edfdata.dimx,edfdata.dimy])
     vCPy = np.empty([edfdata.dimx,edfdata.dimy])
     vCPz = np.empty([edfdata.dimx,edfdata.dimy])
-    distPix = (integOpts.distMDmm/edfdata.pixSXmm)/integOpts.costilt    
+    distPix = (integOpts.distMDmm/edfdata.pixSXmm)
     #horizontal vector (for the azimuth)
     horX = 1.0
     horY = 0.0
@@ -300,19 +306,6 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     edfdata.t2XY = np.arctan(edfdata.t2XY)
     log.info(" atan calculation: %.4f sec"%(time.time() - t0))
     
-    #TODO: GEOM CORRECTIONS (Lorentz,...)
-    t0 = time.time()
-    #edfdata.lorfac = 1/((np.sin(edfdata.t2XY))*((np.sin(edfdata.t2XY/2))))
-    #edfdata.lorfac = 1/((np.cos(edfdata.t2XY/2))*((np.sin(edfdata.t2XY/2))**2))
-    #edfdata.lorfac = ((np.sin(edfdata.t2XY))**2)/((np.cos(edfdata.t2XY/2)))
-    #edfdata.lorfac = 1/((np.cos(edfdata.t2XY))**2)
-    log.info(" lorfac calculation: %.4f sec"%(time.time() - t0))
-    
-    #t2 to degrees
-    t0 = time.time()
-    edfdata.t2XY = np.degrees(edfdata.t2XY)
-    log.info(" to deg calculation: %.4f sec"%(time.time() - t0))
-    
     #Azim calc
     t0 = time.time()
     edfdata.azim = np.degrees(np.arctan2(vCPx,vCPy))
@@ -324,6 +317,10 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     log.debug(" (y,x)=800,1200 azim = %.2f deg"%(edfdata.azim.item(800,1200)))
     log.debug(" (y,x)=800,800 azim = %.2f deg"%(edfdata.azim.item(800,800)))
 
+    #t2 to degrees
+    t0 = time.time()
+    edfdata.t2XY = np.degrees(edfdata.t2XY)
+    log.info(" to deg calculation: %.4f sec"%(time.time() - t0))
 
 ######################################################## MAIN PROGRAM
 if __name__=="__main__":
@@ -337,7 +334,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser(description="EDF file reading and integration")
     parser.add_argument('filename', nargs=1, help='edf file')
     parser.add_argument("-i", "--input", default=None, nargs=1, help='calibration input file')
-    parser.add_argument("-o", "--output", default=None, nargs=1, help='1D output file')
+    parser.add_argument("-o", "--output", default="", nargs=1, help='1D output file (default same as input but .dat')
     parser.add_argument("-pl", "--plot", action="store_true", help='plot image')
     parser.add_argument("-d", "--debug", action="count", help='debug mode')    
     args = parser.parse_args()
@@ -358,6 +355,13 @@ if __name__=="__main__":
     
     log.info("Input file: %s"%args.filename[0])
     print "  Input file: ",args.filename[0]
+        
+    if args.output == "":
+        ipunt = args.filename[0].rfind(".")
+        args.output = args.filename[0][0:ipunt]+".dat"
+    log.info("output file: %s"%args.output)
+    print "  Output file: ",args.output
+    
     edf = EDFdata()
     edf.readFile(args.filename[0])
 
@@ -403,7 +407,7 @@ if __name__=="__main__":
     print "Integration parameters and options:"
     print " Center X,Y = %.3f %.3f"%(integOpts.xcen,integOpts.ycen)
     print " Distance Wavelengh = %.3f %.4f"%(integOpts.distMDmm,integOpts.wavelA)
-    print " tiltRot AngTilt = %.3f %.3f"%(integOpts.tiltRotation,integOpts.angleTilt)
+    print " tiltRot AngTilt = %.3f %.3f (input Rot fit2d conv: %.3f)"%(integOpts.tiltRotation,integOpts.angleTilt,integOpts.tiltRotationIN)
     print " t2ini t2end step = %.4f %.4f %.4f"%(t2in,t2fin,step)
     print " startAzim endAzim = %.4f %.4f (ref. 12h CW+ %.4f %.4f)"%(integOpts.startAzim,integOpts.endAzim,startAzim,endAzim)
     print ""    
@@ -442,9 +446,9 @@ if __name__=="__main__":
 
     t0 = time.time()
 
-    #TODO: APPLY GEOM CORRECTIONS HERE
-    #edf.intenXY = edf.intenXY*edf.lorfac
-    #log.info(" apply lor corr: %.4f sec"%(time.time() - t0))
+    #TODO: IF NECESSARY APPLY GEOM CORRECTIONS HERE?
+    #edf.intenXY = edf.intenXY*edf.gcorr
+    #log.info(" apply gcorr: %.4f sec"%(time.time() - t0))
     #t0 = time.time()
     
     for y in range(edf.dimy):
@@ -472,11 +476,11 @@ if __name__=="__main__":
     
     #write a dat file
     #TODO: HEADER
-    fout = open("test.dat", 'w')
-    fout.write("#TEST PATTERN \n")
+    fout = open(args.output[0], 'w')
+    fout.write("#TEST INTEGRATION \n")
     for i in range(size+1):
         if patt.npix[i] <= 0:continue
-        lorfact = (1./((math.cos(math.radians(patt.t2[i])))**2))
+        lorfact = (1./((math.cos(math.radians(patt.t2[i])))**3))
         icorr = patt.Iobs[i] * lorfact
         if (icorr<0): icorr = 0
         fout.write(" %.5f %5f %5f\n"%(patt.t2[i], icorr/patt.npix[i], math.sqrt(icorr)/patt.npix[i]))
