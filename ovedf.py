@@ -7,7 +7,7 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current (last change 161021 15.20h):
+Current (last change 161021 16.30h):
  - Support for multiple files (batch)
  - Header as in ffops generated files
  - ESD (as in ffops)
@@ -18,11 +18,10 @@ Current (last change 161021 15.20h):
  - Reading EDF and INP files. IntegOpts.
 
 TODO:
- - xbin, ybin, azimbins, masks
+ - MASKS
+ - azimbins
+ - xbin, ybin -- do not get what they do (it is not the same as reducing radial bins??)
  - geometrical corrections needed?
-
- - support for multiple files (batch). It is easy but for testing I 
-   prefer to keep 1 argument (image) only (useful for output file option)
 
 """
 
@@ -418,26 +417,25 @@ if __name__=="__main__":
         #TODO azimbins
         size = (int)(integOpts.radialBins)
         step = (t2fin-t2in)/size
-        
         #correct t2in t2fin to be at the "centre" of the bin
-        t2in = t2in + step/2
-        t2fin = t2fin - step -step/2 #correction to get the nbins and no nbins+1
+#        t2in = t2in #+ step/2
+#        t2fin = t2fin - step #correction to get the nbins and no nbins+1
         
         log.info("Processing %s"%(fname))
         log.info("t2in=%f t2f=%f size=%d step=%f"%(t2in,t2fin,size,step))
         
         print ""
         print "File: %s"%(fname)
-        print "Integration parameters and options:"
-        print " Center X,Y = %.3f %.3f"%(integOpts.xcen,integOpts.ycen)
-        print " Distance Wavelengh = %.3f %.4f"%(integOpts.distMDmm,integOpts.wavelA)
-        print " tiltRot AngTilt = %.3f %.3f (input Rot fit2d conv: %.3f)"%(integOpts.tiltRotation,integOpts.angleTilt,integOpts.tiltRotationIN)
-        print " t2ini t2end step = %.4f %.4f %.4f"%(t2in,t2fin,step)
-        print " startAzim endAzim = %.4f %.4f (ref. 12h CW+ %.4f %.4f)"%(integOpts.startAzim,integOpts.endAzim,startAzim,endAzim)
-#        print ""    
+        print " CenX(px)=%.3f CenY(px)=%.3f Dist(mm)=%.3f Wave(A)=%.4f PixSX(mm)=%.4f"%(integOpts.xcen,integOpts.ycen,integOpts.distMDmm,integOpts.wavelA,edf.pixSXmm)
+        print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)%.4f [fit2d convention]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
+        print " Inner/Outer Radius(Px)=%d %d (º) x/y bin= %d %d azimBins=%d radialBins=%d"%(integOpts.inRadi,integOpts.outRadi,integOpts.xbin,integOpts.xbin,integOpts.azimBins,integOpts.radialBins)
+        print " T2ini(º)=%.4f step(º)=%.4f T2end(º)=%.4f"%(t2in+step/2,step,t2fin-step/2)
+        
+        log.info(" tiltRot internally used = %f"%integOpts.tiltRotation)
+        log.info(" startAzim endAzim internally used used (ref. 12h CW+) = %f %f"%(startAzim,endAzim))
     
         patt = D1Pattern()
-        for j in range(size):
+        for j in range(size+1):
             #log.info(i)
             patt.t2.append(t2in + j*step)
             patt.esd.append(0)
@@ -458,7 +456,7 @@ if __name__=="__main__":
                 row = int(y+0.5)
                 if col>=0 and col<numcols and row>=0 and row<numrows:
                     inten = edf.intenXY.item(row,col)
-                    t2 = edf.t2XY.item(row,col) + (step/2)
+                    t2 = edf.t2XY.item(row,col)
                     azim = edf.azim.item(row,col)
                     return 'col_x=%.1f, row_y=%.1f, Intensity=%d, t2=%.3f, azim=%.2f'%(x, y, inten,t2,azim)
                 else:
@@ -484,13 +482,15 @@ if __name__=="__main__":
                 else:
                     if (azim < startAzim) or (azim > endAzim): continue
                 
-                t2p = edf.t2XY.item(y,x) + (step/2)
+                t2p = edf.t2XY.item(y,x) #+ (step/2)
                 if (t2p<t2in):continue
                 if (t2p>t2fin):continue
     
                 #position in the histogram
-                p = (int)(t2p/step + 0.5)-(int)(t2in/step + 0.5)
-                
+                #p = (int)(t2p/step + 0.5)-(int)(t2in/step + 0.5)
+                #p = (int)(t2p/step)-(int)(t2in/step)
+                p = (int)(t2p/step-t2in/step)
+
                 inten = edf.intenXY.item(y,x)
                 patt.Iobs[p] = patt.Iobs[p] + inten + integOpts.subadu
                 patt.npix[p] = patt.npix[p] + 1
@@ -503,13 +503,14 @@ if __name__=="__main__":
         fout.write("#%s \n"%(fname))
         fout.write("#I vs. 2Theta [deg] Azim: %.2f %.2f Radial %d %d Tilts: %.2f %.2f Dist: %.2f Wave: %.4f Cen: %.2f %.2f Pix: %.2f Bin: %d\n"
                    %(integOpts.startAzim,integOpts.endAzim,integOpts.inRadi,integOpts.outRadi,integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.distMDmm,integOpts.wavelA,integOpts.xcen,integOpts.ycen,edf.pixSXmm*1000,integOpts.azimBins))
+        fout.write("# \n") #blank line (for plmany, it takes min 4 comment lines)
         fout.write("# %d \n"%(size)) #number of points
         for j in range(size):
             if patt.npix[j] <= 0:continue
             
             #correction of t2, e.g. 0 it is really 0+(step/2) to be at the center of the bin
-            t2 = patt.t2[j] #+ (step/2)
-            
+            t2 = patt.t2[j] + (step/2)
+
             #lorentz correction
             lorfact = (1./((math.cos(math.radians(t2)))**3))
             icorr = patt.Iobs[j] * lorfact
@@ -517,9 +518,15 @@ if __name__=="__main__":
             inten = icorr/patt.npix[j]
             
             #esd
-            esd_cst = (2*integOpts.distMDmm*(math.radians(integOpts.endAzim)-math.radians(integOpts.startAzim)))/(edf.pixSXmm*integOpts.azimBins)
-            n_q = esd_cst * math.tan(math.asin((integOpts.wavelA/10)*t2/4./math.pi))
-            esd = math.sqrt(inten/n_q)
+            if (args.noesd == False):
+                esd_cst = (2*integOpts.distMDmm*(math.radians(integOpts.endAzim)-math.radians(integOpts.startAzim)))/(edf.pixSXmm*integOpts.azimBins)
+                n_q = esd_cst * math.tan(math.asin((integOpts.wavelA/10)*t2/4./math.pi)) # wave in nm?
+                esd = math.sqrt(inten/n_q)
+            
+                #write the line
+                fout.write(" %.7E  %.7E %.7E\n"%(round(t2,4), inten, esd))  #round to 4 decimals (ffops uses 3)
+            else:
+                fout.write(" %.7E  %.7E\n"%(round(t2,4), inten)) #no esd
             
             #write the line
             fout.write(" %.7e  %.7e %.7e\n"%(round(t2,3), inten, esd))
