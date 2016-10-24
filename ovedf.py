@@ -7,7 +7,8 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current (last change 161021 16.30h):
+Current (last change 161024 11.40h):
+ - Azimuthal
  - Support for multiple files (batch)
  - Header as in ffops generated files
  - ESD (as in ffops)
@@ -18,8 +19,9 @@ Current (last change 161021 16.30h):
  - Reading EDF and INP files. IntegOpts.
 
 TODO:
+ - fix esd (it is for q nm-1)
+ - Speed up
  - MASKS
- - azimbins
  - xbin, ybin -- do not get what they do (it is not the same as reducing radial bins??)
  - geometrical corrections needed?
 
@@ -120,9 +122,11 @@ class EDFdata:
         header = fedf.read(headersize)
         log.debug(header)
         try:
-            for y in range(self.dimy):
-                for x in range(self.dimx):
-                    self.intenXY[y,x] =  struct.unpack("<H",fedf.read(2))[0] #edf I as unsigned short little endian
+#            for y in range(self.dimy):
+#                for x in range(self.dimx):
+#                    self.intenXY[y,x] =  struct.unpack("<H",fedf.read(2))[0] #edf I as unsigned short little endian
+            self.intenXY = np.fromfile(fedf,np.uint16)
+            self.intenXY = self.intenXY.reshape(self.dimx,self.dimy)
         finally:
             fedf.close()
         log.info(" EDF reading: %.4f sec"%(time.time() - t0))
@@ -247,8 +251,8 @@ def calc2tDeg(integOpts, edfdata, rowY,colX):
     sintilt = integOpts.sintilt
     cosrot = integOpts.cosrot
     sinrot = integOpts.sinrot
-    distPix = (integOpts.distMDmm/edfdata.pixSXmm)/integOpts.costilt
-    
+    distPix = (integOpts.distMDmm/edfdata.pixSXmm)#/integOpts.costilt
+
     # vector centre-pixel
     vPCx=(float)(colX)-integOpts.xcen
     vPCy=integOpts.ycen-(float)(rowY)
@@ -272,6 +276,57 @@ def getAzim(integOpts,edfdata,rowY,colX):
     if (azim<0): azim = azim + 2*math.pi
     return math.degrees(azim)
 
+def calc2tDegFullFASTER(integOpts, edfdata): #and azimuth
+    """full image calculation (to speed up using numpy operations)"""
+    t0 = time.time()
+    #inits
+    vCPy,vCPx = np.mgrid[0:edfdata.dimy,0:edfdata.dimx]
+    vCPz = np.empty([edfdata.dimx,edfdata.dimy])
+    distPix = (integOpts.distMDmm/edfdata.pixSXmm)
+    #horizontal vector (for the azimuth)
+    horX = 1.0
+    horY = 0.0
+    
+    vCPy = integOpts.ycen - vCPy
+    vCPx = vCPx - integOpts.xcen
+    vCPz = (-vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(-integOpts.sintilt)
+    
+    log.info(" vector calculation: %.4f sec"%(time.time() - t0))
+    
+    #Azim calc
+    t0 = time.time()
+    edfdata.azim = np.degrees(np.arctan2(vCPx,vCPy))
+    log.debug(" (y,x)=1200,1200 azim = %.2f deg"%(edfdata.azim.item(1200,1200)))
+    edfdata.azim=np.where(edfdata.azim < 0, edfdata.azim+360,edfdata.azim)
+    log.info(" azim calculation: %.4f sec"%(time.time() - t0))
+    log.debug(" (y,x)=1200,1200 azim = %.2f deg"%(edfdata.azim.item(1200,1200)))
+    log.debug(" (y,x)=1200,800 azim = %.2f deg"%(edfdata.azim.item(1200,800)))
+    log.debug(" (y,x)=800,1200 azim = %.2f deg"%(edfdata.azim.item(800,1200)))
+    log.debug(" (y,x)=800,800 azim = %.2f deg"%(edfdata.azim.item(800,800)))
+    
+    #T2 CALC (modulus, arctan, geomCorr, todegrees)
+    t0 = time.time()
+    edfdata.t2XY = vCPx**2 + vCPy**2 - vCPz**2
+    edfdata.t2XY = np.sqrt(edfdata.t2XY)
+    log.info(" sqrt calculation: %.4f sec"%(time.time() - t0))
+
+    t0 = time.time()
+    edfdata.t2XY = edfdata.t2XY/ (distPix-vCPz)
+    edfdata.t2XY = np.arctan(edfdata.t2XY)
+    log.info(" atan calculation: %.4f sec"%(time.time() - t0))
+    
+    #TODO: GEOM CORRECTIONS 
+    #t0 = time.time()
+    #Add Something if necessary:
+    #edfdata.gcorr = 1/((np.cos(edfdata.t2XY))**2)  #lorentz correction pixels
+    #incidence angle correction:
+    #edfdata.gcorr = edfdata.t2XY - (math.radians(integOpts.angleTilt)*(np.sin(np.radians(edfdata.azim)-math.radians(integOpts.tiltRotation))))  #incidence angle effective
+    #edfdata.gcorr = 1/(np.cos(edfdata.gcorr)*np.cos(edfdata.gcorr)*np.cos(edfdata.gcorr))
+    #log.info(" gcorr calculation: %.4f sec"%(time.time() - t0))
+    
+    t0 = time.time()
+    edfdata.t2XY = np.degrees(edfdata.t2XY)
+    log.info(" to deg calculation: %.4f sec"%(time.time() - t0))
 
 
 def calc2tDegFull(integOpts, edfdata): #and azimuth
@@ -434,15 +489,8 @@ if __name__=="__main__":
         log.info(" tiltRot internally used = %f"%integOpts.tiltRotation)
         log.info(" startAzim endAzim internally used used (ref. 12h CW+) = %f %f"%(startAzim,endAzim))
     
-        patt = D1Pattern()
-        for j in range(size+1):
-            #log.info(i)
-            patt.t2.append(t2in + j*step)
-            patt.esd.append(0)
-            patt.Iobs.append(0)
-            patt.npix.append(0)
-        
-        calc2tDegFull(integOpts,edf)
+        #HEAVY CALCULATION
+        calc2tDegFullFASTER(integOpts,edf)
     
         #IN CASE WE WANT TO PLOT THE IMAGE (I moved it after calculations)
         if (args.plot):
@@ -471,6 +519,31 @@ if __name__=="__main__":
         #log.info(" apply gcorr: %.4f sec"%(time.time() - t0))
         #t0 = time.time()
     
+        #to implement azimBins more than one pattern is needed (in order to do it in one image loop)
+        #we have to divide the azumutal range in azimBins and relate it to the vector position
+        azimRange = endAzim - startAzim
+        if (endAzim<startAzim):
+            azimRange = 360 + azimRange
+        azimInc = (int) (azimRange / integOpts.azimBins)
+        
+        patts = []
+        azimIni = []
+        azimFin = []
+        for k in range(integOpts.azimBins):
+            ini = startAzim+azimInc*k
+            if ini > 360: ini = ini - 360
+            fin = ini + azimInc
+            if fin > 360: fin = fin - 360
+            azimIni.append(ini)
+            azimFin.append(fin)
+
+            patts.append(D1Pattern())
+            for j in range(size+1):
+                patts[k].t2.append(t2in + j*step)
+                patts[k].esd.append(0)
+                patts[k].Iobs.append(0)
+                patts[k].npix.append(0)
+
         for y in range(edf.dimy):
             for x in range(edf.dimx):
                 #TODO: check for excluded zones
@@ -482,57 +555,69 @@ if __name__=="__main__":
                 else:
                     if (azim < startAzim) or (azim > endAzim): continue
                 
-                t2p = edf.t2XY.item(y,x) #+ (step/2)
+                #which position of the azim vector in case azimBins >1:
+                azimPos = 0
+                if (integOpts.azimBins>1):
+                    for k in range(integOpts.azimBins):
+                        if (azimFin[k]<azimIni[k]):
+                            if (azim < azimIni[k]) and (azim > azimFin[k]): continue
+                        else:
+                            if (azim < azimIni[k]) or (azim > azimFin[k]): continue
+                        azimPos = k
+                        break
+                    if azimPos < 0: 
+                        log.info("error in azimPos")
+                        continue
+                
+                t2p = edf.t2XY.item(y,x)
                 if (t2p<t2in):continue
                 if (t2p>t2fin):continue
     
                 #position in the histogram
-                #p = (int)(t2p/step + 0.5)-(int)(t2in/step + 0.5)
-                #p = (int)(t2p/step)-(int)(t2in/step)
                 p = (int)(t2p/step-t2in/step)
 
                 inten = edf.intenXY.item(y,x)
-                patt.Iobs[p] = patt.Iobs[p] + inten + integOpts.subadu
-                patt.npix[p] = patt.npix[p] + 1
+                patts[azimPos].Iobs[p] = patts[azimPos].Iobs[p] + inten + integOpts.subadu
+                patts[azimPos].npix[p] = patts[azimPos].npix[p] + 1
         
         log.info(" histogram filling: %.4f sec"%(time.time() - t0))
     
-        #write the output dat file
-        #TODO: HEADER
-        fout = open(outFiles[i], 'w')
-        fout.write("#%s \n"%(fname))
-        fout.write("#I vs. 2Theta [deg] Azim: %.2f %.2f Radial %d %d Tilts: %.2f %.2f Dist: %.2f Wave: %.4f Cen: %.2f %.2f Pix: %.2f Bin: %d\n"
-                   %(integOpts.startAzim,integOpts.endAzim,integOpts.inRadi,integOpts.outRadi,integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.distMDmm,integOpts.wavelA,integOpts.xcen,integOpts.ycen,edf.pixSXmm*1000,integOpts.azimBins))
-        fout.write("# \n") #blank line (for plmany, it takes min 4 comment lines)
-        fout.write("# %d \n"%(size)) #number of points
-        for j in range(size):
-            if patt.npix[j] <= 0:continue
-            
-            #correction of t2, e.g. 0 it is really 0+(step/2) to be at the center of the bin
-            t2 = patt.t2[j] + (step/2)
-
-            #lorentz correction
-            lorfact = (1./((math.cos(math.radians(t2)))**3))
-            icorr = patt.Iobs[j] * lorfact
-            if (icorr<0): icorr = 0
-            inten = icorr/patt.npix[j]
-            
-            #esd
-            if (args.noesd == False):
-                esd_cst = (2*integOpts.distMDmm*(math.radians(integOpts.endAzim)-math.radians(integOpts.startAzim)))/(edf.pixSXmm*integOpts.azimBins)
-                n_q = esd_cst * math.tan(math.asin((integOpts.wavelA/10)*t2/4./math.pi)) # wave in nm?
-                esd = math.sqrt(inten/n_q)
-            
-                #write the line
-                fout.write(" %.7E  %.7E %.7E\n"%(round(t2,4), inten, esd))  #round to 4 decimals (ffops uses 3)
+        #write the output dat(s) file
+        for k in range(integOpts.azimBins):
+            if (integOpts.azimBins>1):
+                if k==0: iniName = outFiles[i]
+                ipunt = iniName.rfind(".")
+                outFiles[i] = iniName[0:ipunt]+"_bin%02d.dat"%(k)
+            fout = open(outFiles[i], 'w')
+            fout.write("#%s \n"%(fname))
+            fout.write("#I vs. 2Theta [deg] Azim: %.2f %.2f Radial %d %d Tilts: %.2f %.2f Dist: %.2f Wave: %.4f Cen: %.2f %.2f Pix: %.2f Bin: %d\n"
+                    %(integOpts.startAzim,integOpts.endAzim,integOpts.inRadi,integOpts.outRadi,integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.distMDmm,integOpts.wavelA,integOpts.xcen,integOpts.ycen,edf.pixSXmm*1000,integOpts.azimBins))
+            if (integOpts.azimBins>1):
+                fout.write("# Azim Bin %d: from %.2f to %.2f\n"%(k,azimIni[k],azimFin[k]))
             else:
-                fout.write(" %.7E  %.7E\n"%(round(t2,4), inten)) #no esd
-            
-            #write the line
-            fout.write(" %.7e  %.7e %.7e\n"%(round(t2,3), inten, esd))
-        fout.close()
-        print "==> Output DAT file (xye format): %s"%(outFiles[i])
-        log.info("%s dat file written"%(outFiles[i]))
+                fout.write("# \n") #blank line (for plmany, it takes min 4 comment lines)
+            fout.write("# %d \n"%(size)) #number of points
+            for j in range(size):
+                if patts[k].npix[j] <= 0:continue
+                
+                #correction of t2, e.g. 0 it is really 0+(step/2) to be at the center of the bin
+                t2 = patts[k].t2[j] + (step/2)
+                
+                #lorentz correction
+                lorfact = (1./((math.cos(math.radians(t2)))**3))
+                icorr = patts[k].Iobs[j] * lorfact
+                if (icorr<0): icorr = 0
+                inten = icorr/patts[k].npix[j]
+                
+                if (args.noesd == False):
+                    esd = math.sqrt(inten/patts[k].npix[j])
+                    #write the line
+                    fout.write(" %.7E  %.7E %.7E\n"%(round(t2,4), inten, esd))  #round to 4 decimals (ffops uses 3)
+                else:
+                    fout.write(" %.7E  %.7E\n"%(round(t2,4), inten)) #no esd
+            fout.close()
+            print "==> Output DAT file (xye format): %s"%(outFiles[i])
+            log.info("%s dat file written"%(outFiles[i]))
         
     print ""
     print "=== END EXECUTION (total time %.4f sec) ==="%(time.time()-ts)
