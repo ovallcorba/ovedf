@@ -7,7 +7,8 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current (last change 161117 16.45h):
+Current (last change 161117 17.30h):
+ - Mask in BIN format (image with all I=0 except mask pixels with I=-1)
  - D2Dplot or Fit2d convention (argument option)
  - Added counters on header
  - Speed optimization, only histogram filling is pending
@@ -24,9 +25,7 @@ Current (last change 161117 16.45h):
 
 TODO:
  - Speed up histogram filling
- - MASKS
- - xbin, ybin -- not necessary
- - check geometrical corrections?
+ - maybe apply mask before to the whole image? would it be faster?
 
 """
 
@@ -36,6 +35,7 @@ import argparse
 import struct
 import logging as log
 import matplotlib.pyplot as plt
+
 
 class EDFdata:
     def __init__(self):
@@ -55,8 +55,8 @@ class EDFdata:
         # these data will be retrieved from the edf header
         
         self.t2XY = None   #np array of t2
-        self.azim = None
-        self.gcorr = None  #np array of geometrical corrections (not used right now...)
+        self.azim = None   #np array of azim
+
     def readFile(self, edfFilename):
         """Reads a EDF file and populates the data"""
         t0 = time.time()        
@@ -130,10 +130,8 @@ class EDFdata:
         self.intenXY = np.empty([self.dimx,self.dimy])
         self.t2XY = np.empty([self.dimx,self.dimy])
         self.azim = np.empty([self.dimx,self.dimy])
-        self.gcorr = np.empty([self.dimx,self.dimy])
 
         fedf = open(edfFilename, "rb")
-        row = []
         header = fedf.read(headersize)
         log.debug(header)
         try:
@@ -142,6 +140,53 @@ class EDFdata:
         finally:
             fedf.close()
         log.info(" EDF reading: %.4f sec"%(time.time() - t0))
+
+    def readBINFile(self, binFilename):
+        """Reads a BIN file and populates the data"""
+        t0 = time.time()
+
+        #binary 60 bytes Header, then intensity as signed int*2 as (1,1), (2,1), (3,1),....
+        #header contains:
+        # Int*4 NXMX(cols)
+        # Int*4 NYMX(rows)
+        # Real*4 SCALE
+        # Real*4 CENTX
+        # Real*4 CENTY
+        # Real*4 PIXLX
+        # Real*4 PIXLY
+        # Real*4 DISTOD
+        # Real*4 WAVEL
+        # Real*4 OME/PHI ini (degrees)
+        # Real*4 OME/PHI final (degrees)
+        # REAL*4 ACQTIME
+        headersize = 60
+
+                
+        fbin = open(binFilename, "rb")
+        
+        self.dimx = struct.unpack("<i",fbin.read(4))[0]
+        self.dimy = struct.unpack("<i",fbin.read(4))[0]
+        fbin.read(4) #scale
+        self.xcen = struct.unpack("<f",fbin.read(4))[0]
+        self.ycen = struct.unpack("<f",fbin.read(4))[0]
+        self.pixSXmm = struct.unpack("<f",fbin.read(4))[0]
+        self.pixSYmm = struct.unpack("<f",fbin.read(4))[0]
+        self.distMDmm = struct.unpack("<f",fbin.read(4))[0]
+        self.wavelA = struct.unpack("<f",fbin.read(4))[0]
+        #up to here 36 bytes readed, 24 remaining for the header
+        fbin.read(24)
+        
+        log.info("dimx=%d dimy=%d xcen=%.2f ycen=%.2f pixSXmm=%.2f pixSYmm=%.2f distMDmm=%.2f wavelA=%.4f"%(self.dimx,self.dimy,self.xcen,self.ycen,self.pixSXmm,self.pixSYmm,self.distMDmm,self.wavelA))
+        
+        #init
+        self.intenXY = np.empty([self.dimx,self.dimy])
+
+        try:
+            self.intenXY = np.fromfile(fbin,np.int16)
+            self.intenXY = self.intenXY.reshape(self.dimx,self.dimy)
+        finally:
+            fbin.close()
+        log.info(" BIN reading: %.4f sec"%(time.time() - t0))
 
 class IntegOptions:
     def __init__(self):
@@ -163,7 +208,7 @@ class IntegOptions:
         self.azimBins = 1
         self.radialBins = 1000
         self.fit2d = False
-        # TODO:MASK implementation
+        self.maskf = None
         
         # this inside here to speed up
         self.costilt = None
@@ -237,7 +282,9 @@ class IntegOptions:
                 if line.startswith("RADIAL BINS"):
                     self.radialBins = int(float(line[iigual+1:ipcoma].strip()))
                     log.debug("RADIAL BINS="+str(self.radialBins))
-                #TODO MASK
+                if line.startswith("MASK"):
+                    self.maskf = line[iigual+1:ipcoma].strip()
+                    log.debug("MASK="+self.maskf)
 
         finally:
             log.debug("finally executed")
@@ -259,7 +306,7 @@ class IntegOptions:
         self.cosrot = math.cos(math.radians(self.tiltRotation))
         self.sinrot = math.sin(math.radians(self.tiltRotation))
         
-        print 'tilt=%.6f rot=%.6f sT=%.6f cT=%.6f sR=%.6f cR=%.6f'%(self.tiltRotation,self.angleTilt,self.sintilt,self.costilt,self.sinrot,self.cosrot)
+        log.debug('tilt=%.6f rot=%.6f sT=%.6f cT=%.6f sR=%.6f cR=%.6f'%(self.tiltRotation,self.angleTilt,self.sintilt,self.costilt,self.sinrot,self.cosrot))
 
 class D1Pattern:
     def __init__(self):
@@ -282,15 +329,10 @@ def calc2tDeg(integOpts, edfdata, rowY,colX):
     vPCx=(float)(colX)-integOpts.xcen
     vPCy=integOpts.ycen-(float)(rowY)
     
-    if integOpts.fit2d:
-        #zcomponent = (-vPCx*sinrot + vPCy*cosrot)*(-sintilt)
-        zcomponent = (vPCx*sinrot + vPCy*cosrot)*(sintilt)
-    else:
-        zcomponent = (vPCx*sinrot + vPCy*cosrot)*(sintilt)
+    zcomponent = (vPCx*sinrot + vPCy*cosrot)*(sintilt)
     tiltedVecMod = math.sqrt(vPCx**2+vPCy**2-zcomponent**2)
     t2p = math.atan(tiltedVecMod/(distPix-zcomponent))
     
-    print 'vPCx=%.6f vPCy=%.6f zcomponent=%.6f tiltedVecMod=%.6f t2p=%.6f'%(vPCx,vPCy,zcomponent,tiltedVecMod,t2p)
     return math.degrees(t2p)
 
 def getAzim(integOpts,edfdata,rowY,colX):
@@ -317,11 +359,7 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     #vectors calculation
     vCPx = vCPx - integOpts.xcen
     vCPy = integOpts.ycen - vCPy
-    if integOpts.fit2d:
-        #vCPz = (-vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(-integOpts.sintilt)
-        vCPz = (vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(integOpts.sintilt)
-    else:
-        vCPz = (vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(integOpts.sintilt)
+    vCPz = (vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(integOpts.sintilt)
     log.info(" vector calculation: %.4f sec"%(time.time() - t0))
     
     #Azim calc
@@ -329,13 +367,8 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     horX = 1.0  #horizontal vector
     horY = 0.0
     edfdata.azim = np.degrees(np.arctan2(vCPx,vCPy))
-    log.debug(" (y,x)=1200,1200 azim = %.2f deg"%(edfdata.azim.item(1200,1200)))
     edfdata.azim=np.where(edfdata.azim < 0, edfdata.azim+360,edfdata.azim)
     log.info(" azim calculation: %.4f sec"%(time.time() - t0))
-    log.debug(" (y,x)=1200,1200 azim = %.2f deg"%(edfdata.azim.item(1200,1200)))
-    log.debug(" (y,x)=1200,800 azim = %.2f deg"%(edfdata.azim.item(1200,800)))
-    log.debug(" (y,x)=800,1200 azim = %.2f deg"%(edfdata.azim.item(800,1200)))
-    log.debug(" (y,x)=800,800 azim = %.2f deg"%(edfdata.azim.item(800,800)))
 
     #T2 CALC (modulus, arctan, geomCorr, todegrees)
     t0 = time.time()
@@ -348,20 +381,6 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     edfdata.t2XY = np.arctan(edfdata.t2XY)
     log.info(" atan calculation: %.4f sec"%(time.time() - t0))
 
-    #debug
-    log.info("distMDpix=%.5f sinrot=%.5f cosrot=%.5f sintilt=%.5f"%(distPix,integOpts.sinrot,integOpts.cosrot,integOpts.sintilt))
-    for y in range(601,620):
-        for x in range(601,620):
-            vCPx = x - integOpts.xcen
-            vCPy = integOpts.ycen - y
-            vCPz = (vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(integOpts.sintilt)
-            t2p1 = vCPx**2 + vCPy**2 - vCPz**2
-            t2p2 = np.sqrt(t2p1)
-            t2p3 = t2p2/(distPix-vCPz)
-            t2p4 = np.arctan(t2p3)
-            t2p5 = np.degrees(t2p4)
-            log.info("x=%.5f y=%.5f vCPx=%.5f vCPy=%.5f vCPz=%.5f t2p1=%.5f t2p2=%.5f t2p3=%.5f t2p4=%.5f t2p5=%.5f"%(x,y,vCPx,vCPy,vCPz,t2p1,t2p2,t2p3,t2p4,t2p5))
-
     t0 = time.time()
     edfdata.t2XY = np.degrees(edfdata.t2XY)
     log.info(" to deg calculation: %.4f sec"%(time.time() - t0))
@@ -369,11 +388,11 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
 ######################################################## MAIN PROGRAM
 if __name__=="__main__":
 
-    __version__ = '161102'
+    __version__ = '161117'
     
     ts = time.time()
     st = '[' + datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') + '] '
-    welcomeMsg = st+'=== MSPD EDF IMAGE INTEGRATION ver.'+__version__+' by OV ==='
+    welcomeMsg = '=== MSPD EDF IMAGE INTEGRATION ver.'+__version__+' by OV === '+st
 
     #argument parsing
     parser = argparse.ArgumentParser(description="EDF image integration")
@@ -401,6 +420,10 @@ if __name__=="__main__":
     print welcomeMsg
     print ''
     
+    if len(sys.argv) <= 1:
+        parser.parse_args(["--help"])
+        sys.exit()
+
     #Entered filenames to process and output filenames to generate:
     files = []
     for i in range(len(args.filenames)):
@@ -429,6 +452,7 @@ if __name__=="__main__":
     if args.fit2d:
         #enable fit2d option
         integOpts.fit2d = True
+
     if args.par is not None: #otherwise default parameters (image headers) will be used
         log.info("reading inp file:"+args.par)
         integOpts.readINPFile(args.par)
@@ -447,7 +471,14 @@ if __name__=="__main__":
             #direct values (d2dplot convention)
             startAzim = integOpts.startAzim
             endAzim = integOpts.endAzim
-    
+
+    isMask = False
+    if integOpts.maskf is not None:
+        #read the mask file
+        maskbin = EDFdata()
+        maskbin.readBINFile(integOpts.maskf)
+        isMask = True
+
     for i in range(len(files)):
         fname = files[i]
         edf = EDFdata()
@@ -477,12 +508,16 @@ if __name__=="__main__":
         print ""
         print "File: %s"%(fname)
         print " CenX(px)=%.3f CenY(px)=%.3f Dist(mm)=%.3f Wave(A)=%.4f PixSX(mm)=%.4f"%(integOpts.xcen,integOpts.ycen,integOpts.distMDmm,integOpts.wavelA,edf.pixSXmm)
-        print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)%.4f [fit2d convention]"%(integOpts.tiltRotation,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
+        if integOpts.fit2d:
+            print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [fit2d convention: 0 at 3h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
+        else:
+            print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [d2dplot convention: 0 at 12h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
         print " Inner/Outer Radius(Px)=%d %d (º) x/y bin= %d %d azimBins=%d radialBins=%d"%(integOpts.inRadi,integOpts.outRadi,integOpts.xbin,integOpts.xbin,integOpts.azimBins,integOpts.radialBins)
         print " T2ini(º)=%.4f step(º)=%.4f T2end(º)=%.4f"%(t2in+step/2,step,t2fin-step/2)
-        
+        if(isMask):print " Mask file= %s"%(integOpts.maskf)
+
         log.info(" tiltRot internally used = %f"%integOpts.tiltRotation)
-        log.info(" startAzim endAzim internally used used (ref. 12h CW+) = %f %f"%(startAzim,endAzim))
+        log.info(" startAzim endAzim internally used (ref. 12h CW+) = %f %f"%(startAzim,endAzim))
     
         #HEAVY CALCULATION
         calc2tDegFull(integOpts,edf)
@@ -541,7 +576,9 @@ if __name__=="__main__":
 
         for y in range(edf.dimy):
             for x in range(edf.dimx):
-                #TODO: check for excluded zones
+                #first if there is a mask readed we check it
+                if isMask:
+                    if (maskbin.intenXY.item(y,x)<0):continue
     
                 azim = edf.azim.item(y,x)
 
@@ -570,7 +607,6 @@ if __name__=="__main__":
     
                 #position in the histogram
                 p = (int)(t2p/step-t2in/step)
-
                 inten = edf.intenXY.item(y,x)
                 patts[azimPos].Iobs[p] = patts[azimPos].Iobs[p] + inten + integOpts.subadu
                 patts[azimPos].npix[p] = patts[azimPos].npix[p] + 1
