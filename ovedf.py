@@ -7,7 +7,8 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current (last change 161102 11.45h):
+Current (last change 161117 16.45h):
+ - D2Dplot or Fit2d convention (argument option)
  - Added counters on header
  - Speed optimization, only histogram filling is pending
  - direct calculation of ESD using npix
@@ -161,6 +162,7 @@ class IntegOptions:
         self.ybin = 1
         self.azimBins = 1
         self.radialBins = 1000
+        self.fit2d = False
         # TODO:MASK implementation
         
         # this inside here to speed up
@@ -241,10 +243,15 @@ class IntegOptions:
             log.debug("finally executed")
             finp.close()
 
-        #rot convention from fit2d (0 at 3 CW+ when corrected flip H) to 0 at 12h CW-
-        self.tiltRotation = (-1)*(self.tiltRotationIN) - 90
-        if (self.tiltRotation<=-180):
-            self.tiltRotation = self.tiltRotation%180
+        if self.fit2d:
+            #rot convention from fit2d (0 at 3 CW+ when corrected flip H) to 0 at 12h CW+
+            self.tiltRotation = self.tiltRotationIN + 90
+            if (self.tiltRotation>=180):
+                self.tiltRotation = self.tiltRotationIN%(-180)
+            self.angleTilt = -self.angleTilt
+        else:
+            #direct value
+            self.tiltRotation=self.tiltRotationIN
 
         #calculation here to speed up the process
         self.costilt = math.cos(math.radians(self.angleTilt))
@@ -252,6 +259,8 @@ class IntegOptions:
         self.cosrot = math.cos(math.radians(self.tiltRotation))
         self.sinrot = math.sin(math.radians(self.tiltRotation))
         
+        print 'tilt=%.6f rot=%.6f sT=%.6f cT=%.6f sR=%.6f cR=%.6f'%(self.tiltRotation,self.angleTilt,self.sintilt,self.costilt,self.sinrot,self.cosrot)
+
 class D1Pattern:
     def __init__(self):
         self.t2 = []     # array 2Theta
@@ -273,10 +282,15 @@ def calc2tDeg(integOpts, edfdata, rowY,colX):
     vPCx=(float)(colX)-integOpts.xcen
     vPCy=integOpts.ycen-(float)(rowY)
     
-    zcomponent = (-vPCx*sinrot + vPCy*cosrot)*(-sintilt)
+    if integOpts.fit2d:
+        #zcomponent = (-vPCx*sinrot + vPCy*cosrot)*(-sintilt)
+        zcomponent = (vPCx*sinrot + vPCy*cosrot)*(sintilt)
+    else:
+        zcomponent = (vPCx*sinrot + vPCy*cosrot)*(sintilt)
     tiltedVecMod = math.sqrt(vPCx**2+vPCy**2-zcomponent**2)
     t2p = math.atan(tiltedVecMod/(distPix-zcomponent))
     
+    print 'vPCx=%.6f vPCy=%.6f zcomponent=%.6f tiltedVecMod=%.6f t2p=%.6f'%(vPCx,vPCy,zcomponent,tiltedVecMod,t2p)
     return math.degrees(t2p)
 
 def getAzim(integOpts,edfdata,rowY,colX):
@@ -287,7 +301,7 @@ def getAzim(integOpts,edfdata,rowY,colX):
     vCPy=integOpts.ycen-(float)(rowY)
     
     #angle --- defined FROM 12h clockwise +
-    azim = np.atan2(vCPx,vCPy)
+    azim = np.arctan2(vCPx,vCPy)
     
     if (azim<0): azim = azim + 2*math.pi
     return math.degrees(azim)
@@ -301,10 +315,13 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     distPix = (integOpts.distMDmm/edfdata.pixSXmm)/integOpts.costilt
     
     #vectors calculation
-    vCPy = integOpts.ycen - vCPy
     vCPx = vCPx - integOpts.xcen
-    vCPz = (-vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(-integOpts.sintilt)
-    
+    vCPy = integOpts.ycen - vCPy
+    if integOpts.fit2d:
+        #vCPz = (-vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(-integOpts.sintilt)
+        vCPz = (vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(integOpts.sintilt)
+    else:
+        vCPz = (vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(integOpts.sintilt)
     log.info(" vector calculation: %.4f sec"%(time.time() - t0))
     
     #Azim calc
@@ -331,6 +348,20 @@ def calc2tDegFull(integOpts, edfdata): #and azimuth
     edfdata.t2XY = np.arctan(edfdata.t2XY)
     log.info(" atan calculation: %.4f sec"%(time.time() - t0))
 
+    #debug
+    log.info("distMDpix=%.5f sinrot=%.5f cosrot=%.5f sintilt=%.5f"%(distPix,integOpts.sinrot,integOpts.cosrot,integOpts.sintilt))
+    for y in range(601,620):
+        for x in range(601,620):
+            vCPx = x - integOpts.xcen
+            vCPy = integOpts.ycen - y
+            vCPz = (vCPx*integOpts.sinrot + vCPy*integOpts.cosrot)*(integOpts.sintilt)
+            t2p1 = vCPx**2 + vCPy**2 - vCPz**2
+            t2p2 = np.sqrt(t2p1)
+            t2p3 = t2p2/(distPix-vCPz)
+            t2p4 = np.arctan(t2p3)
+            t2p5 = np.degrees(t2p4)
+            log.info("x=%.5f y=%.5f vCPx=%.5f vCPy=%.5f vCPz=%.5f t2p1=%.5f t2p2=%.5f t2p3=%.5f t2p4=%.5f t2p5=%.5f"%(x,y,vCPx,vCPy,vCPz,t2p1,t2p2,t2p3,t2p4,t2p5))
+
     t0 = time.time()
     edfdata.t2XY = np.degrees(edfdata.t2XY)
     log.info(" to deg calculation: %.4f sec"%(time.time() - t0))
@@ -348,6 +379,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser(description="EDF image integration")
     parser.add_argument('filenames', nargs='*', help='edf file')
     parser.add_argument("-i", "--par", default=None, help='calibration input file')
+    parser.add_argument("-f2d", "--fit2d", action="store_true", help='fit2D convention for tilt/rot (default is d2Dplot convention)')
     parser.add_argument("-o", "--output", default="", help='1D output file only when processing one file (default: filename.dat')
     parser.add_argument("-s", "--suffix", default="", help='suffix for the output names (before the dat extension)')
     parser.add_argument("-ne", "--noesd", default=False, help='do not calculate esd\'s')
@@ -394,20 +426,27 @@ if __name__=="__main__":
    
     #now we read the calibration parameter file
     integOpts = IntegOptions()
+    if args.fit2d:
+        #enable fit2d option
+        integOpts.fit2d = True
     if args.par is not None: #otherwise default parameters (image headers) will be used
         log.info("reading inp file:"+args.par)
         integOpts.readINPFile(args.par)
         
-        #put start and end azim in range 0-360 starting at 12o'clock direction clockwise !!
-        #Inserted as fit2d 3o'clock=zero and positive clockwise (because it is y inverted!)
-        startAzim = integOpts.startAzim
-        if (startAzim < 0): startAzim = startAzim + 360
-        endAzim = integOpts.endAzim
-        if (endAzim < 0): endAzim = endAzim + 360
-        #now +90 to put at 12 (remember + clockwise)
-        startAzim = startAzim +90
-        endAzim = endAzim +90
-    
+        if integOpts.fit2d:
+            #put start and end azim in range 0-360 starting at 12o'clock direction clockwise !!
+            #Inserted as fit2d 3o'clock=zero and positive clockwise (because it is y inverted!)
+            startAzim = integOpts.startAzim
+            if (startAzim < 0): startAzim = startAzim + 360
+            endAzim = integOpts.endAzim
+            if (endAzim < 0): endAzim = endAzim + 360
+            #now +90 to put at 12 (remember + clockwise)
+            startAzim = startAzim +90
+            endAzim = endAzim +90
+        else:
+            #direct values (d2dplot convention)
+            startAzim = integOpts.startAzim
+            endAzim = integOpts.endAzim
     
     for i in range(len(files)):
         fname = files[i]
@@ -438,7 +477,7 @@ if __name__=="__main__":
         print ""
         print "File: %s"%(fname)
         print " CenX(px)=%.3f CenY(px)=%.3f Dist(mm)=%.3f Wave(A)=%.4f PixSX(mm)=%.4f"%(integOpts.xcen,integOpts.ycen,integOpts.distMDmm,integOpts.wavelA,edf.pixSXmm)
-        print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)%.4f [fit2d convention]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
+        print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)%.4f [fit2d convention]"%(integOpts.tiltRotation,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
         print " Inner/Outer Radius(Px)=%d %d (º) x/y bin= %d %d azimBins=%d radialBins=%d"%(integOpts.inRadi,integOpts.outRadi,integOpts.xbin,integOpts.xbin,integOpts.azimBins,integOpts.radialBins)
         print " T2ini(º)=%.4f step(º)=%.4f T2end(º)=%.4f"%(t2in+step/2,step,t2fin-step/2)
         
