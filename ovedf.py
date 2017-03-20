@@ -7,7 +7,8 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current (last change 161117 17.30h):
+Current (last change 170320 15.50h):
+ - Use EDF header refinement values if no par file is supplied
  - Mask in BIN format (image with all I=0 except mask pixels with I=-1)
  - D2Dplot or Fit2d convention (argument option)
  - Added counters on header
@@ -26,7 +27,6 @@ Current (last change 161117 17.30h):
 TODO:
  - Speed up histogram filling
  - maybe apply mask before to the whole image? would it be faster?
-
 """
 
 import numpy as np
@@ -52,6 +52,10 @@ class EDFdata:
         self.comment = ''
         self.counter_mne = []
         self.counter_pos = []
+        self.tiltRotation = 0.0
+        self.angleTilt = 0.0
+        self.tiltRotationIN = 0.0
+        self.fit2d = False
         # these data will be retrieved from the edf header
         
         self.t2XY = None   #np array of t2
@@ -115,6 +119,16 @@ class EDFdata:
                 if line.startswith("counter_pos"):
                     self.counter_pos = line[iigual+1:ipcoma].strip().split()
                     log.debug("counter_pos="+str(self.counter_pos))
+                if line.startswith("ref_tilt"):
+                    self.angleTilt = float(line[iigual+1:ipcoma].strip())
+                    log.debug("ref_tilt="+str(self.angleTilt))
+                if line.startswith("ref_rot"):
+                    self.tiltRotationIN = float(line[iigual+1:ipcoma].strip())
+                    log.debug("ref_rot="+str(self.tiltRotationIN))
+                if line.startswith("ref_calfile"):
+                    if "Fit2D" in line:
+                        self.fit2d = True
+                        log.debug("ref_calfile contain fit2d calibration")
                 lcount=lcount+1
         finally:
             log.debug("finally executed")
@@ -198,15 +212,15 @@ class IntegOptions:
         self.tiltRotation = 0.0
         self.angleTilt = 0.0
         self.tiltRotationIN = 0.0
-        self.subadu = 0.0
+        self.subadu = -9.5
         self.startAzim = 0
         self.endAzim = 360
         self.inRadi = 0
-        self.outRadi = 1000
+        self.outRadi = 1020
         self.xbin = 1
         self.ybin = 1
         self.azimBins = 1
-        self.radialBins = 1000
+        self.radialBins = 1020
         self.fit2d = False
         self.maskf = None
         
@@ -237,6 +251,9 @@ class IntegOptions:
                 except:
                     ipcoma = len(line)-1
 
+                if "Fit2D" in line:
+                    self.fit2d=True
+                    log.debug("FIT2D calibration file")
                 if line.startswith("X-BEAM"):
                     self.xcen = float(line[iigual+1:ipcoma].strip()) 
                     log.debug("X-BEAM="+str(self.xcen))
@@ -291,6 +308,7 @@ class IntegOptions:
             finp.close()
 
         if self.fit2d:
+            log.info("IntegOptions self.fit2d is true")
             #rot convention from fit2d (0 at 3 CW+ when corrected flip H) to 0 at 12h CW+
             self.tiltRotation = self.tiltRotationIN + 90
             if (self.tiltRotation>=180):
@@ -453,6 +471,7 @@ if __name__=="__main__":
         #enable fit2d option
         integOpts.fit2d = True
 
+    hasParFile=True
     if args.par is not None: #otherwise default parameters (image headers) will be used
         log.info("reading inp file:"+args.par)
         integOpts.readINPFile(args.par)
@@ -471,6 +490,9 @@ if __name__=="__main__":
             #direct values (d2dplot convention)
             startAzim = integOpts.startAzim
             endAzim = integOpts.endAzim
+    else:
+      #args.par is None
+      hasParFile=False
 
     isMask = False
     if integOpts.maskf is not None:
@@ -494,6 +516,42 @@ if __name__=="__main__":
         if integOpts.wavelA <= 0:
             integOpts.wavelA = edf.wavelA
     
+        
+        if not hasParFile: #take from the edf header ALL the info
+            if edf.fit2d:
+              integOpts.fit2d=True
+              integOpts.tiltRotationIN = edf.tiltRotationIN
+              #rot convention from fit2d (0 at 3 CW+ when corrected flip H) to 0 at 12h CW+
+              integOpts.tiltRotation = edf.tiltRotationIN + 90
+              if (integOpts.tiltRotation>=180):
+                  integOpts.tiltRotation = integOpts.tiltRotationIN%(-180)
+              integOpts.angleTilt = -edf.angleTilt
+              
+              #put start and end azim in range 0-360 starting at 12o'clock direction clockwise !!
+              #Inserted as fit2d 3o'clock=zero and positive clockwise (because it is y inverted!)
+              startAzim = integOpts.startAzim
+              if (startAzim < 0): startAzim = startAzim + 360
+              endAzim = integOpts.endAzim
+              if (endAzim < 0): endAzim = endAzim + 360
+              #now +90 to put at 12 (remember + clockwise)
+              startAzim = startAzim +90
+              endAzim = endAzim +90
+              
+            else:
+              #direct value
+              integOpts.tiltRotation=edf.tiltRotationIN
+              integOpts.tiltRotationIN=edf.tiltRotationIN
+              integOpts.angleTilt=edf.angleTilt
+              #direct values (d2dplot convention)
+              startAzim = integOpts.startAzim
+              endAzim = integOpts.endAzim
+            
+            #calculation here to speed up the process
+            integOpts.costilt = math.cos(math.radians(integOpts.angleTilt))
+            integOpts.sintilt = math.sin(math.radians(integOpts.angleTilt))
+            integOpts.cosrot = math.cos(math.radians(integOpts.tiltRotation))
+            integOpts.sinrot = math.sin(math.radians(integOpts.tiltRotation))
+
         #NOW WE INTEGRATE
         
         #Integration options
@@ -507,12 +565,16 @@ if __name__=="__main__":
         
         print ""
         print "File: %s"%(fname)
+        if hasParFile:
+            print " Refined Calibration Parameters from file: %s"%(args.par)
+        else:
+            print " Refined Calibration Parameters from EDF header"
         print " CenX(px)=%.3f CenY(px)=%.3f Dist(mm)=%.3f Wave(A)=%.4f PixSX(mm)=%.4f"%(integOpts.xcen,integOpts.ycen,integOpts.distMDmm,integOpts.wavelA,edf.pixSXmm)
         if integOpts.fit2d:
             print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [fit2d convention: 0 at 3h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
         else:
             print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [d2dplot convention: 0 at 12h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
-        print " Inner/Outer Radius(Px)=%d %d (º) x/y bin= %d %d azimBins=%d radialBins=%d"%(integOpts.inRadi,integOpts.outRadi,integOpts.xbin,integOpts.xbin,integOpts.azimBins,integOpts.radialBins)
+        print " Inner/Outer Radius(Px)=%d %d (º) x/y bin= %d %d azimBins=%d radialBins=%d bkg=%.2f"%(integOpts.inRadi,integOpts.outRadi,integOpts.xbin,integOpts.xbin,integOpts.azimBins,integOpts.radialBins,integOpts.subadu)
         print " T2ini(º)=%.4f step(º)=%.4f T2end(º)=%.4f"%(t2in+step/2,step,t2fin-step/2)
         if(isMask):print " Mask file= %s"%(integOpts.maskf)
 
@@ -623,6 +685,7 @@ if __name__=="__main__":
             fout.write("#%s  COM = %s\n"%(fname,edf.comment))
             fout.write("#I vs. 2Theta [deg] Azim: %.2f %.2f Radial %d %d Tilts: %.2f %.2f Dist: %.2f Wave: %.4f Cen: %.2f %.2f Pix: %.2f Bin: %d\n"
                     %(integOpts.startAzim,integOpts.endAzim,integOpts.inRadi,integOpts.outRadi,integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.distMDmm,integOpts.wavelA,integOpts.xcen,integOpts.ycen,edf.pixSXmm*1000,integOpts.azimBins))
+            fout.write("# Wave = %.4f\n"%integOpts.wavelA)
             if (integOpts.azimBins>1):
                 fout.write("# Azim Bin %d: from %.2f to %.2f\n"%(k,azimIni[k],azimFin[k]))
             line = ''
