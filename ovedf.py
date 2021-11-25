@@ -434,9 +434,9 @@ if __name__=="__main__":
 
     log.info('parser.parse_args()= %s',args)
     
-    print ''
-    print welcomeMsg
-    print ''
+    print('')
+    print(welcomeMsg)
+    print('')
     
     if len(sys.argv) <= 1:
         parser.parse_args(["--help"])
@@ -448,7 +448,7 @@ if __name__=="__main__":
         for filename in glob.glob(args.filenames[i]):
             files.append(filename)
     log.info("Input file(s): %s"%files)
-    print "  Input file(s): %s"%(files)
+    print("  Input file(s): %s"%(files))
 
     outFiles = []
     if (len(args.filenames)==1):
@@ -463,7 +463,7 @@ if __name__=="__main__":
             ipunt = fname.rfind(".")
             outFiles.append(fname[0:ipunt]+args.suffix+".dat")
     log.info("output file(s): %s"%outFiles)
-    print "  Output file(s): %s"%(outFiles)
+    print("  Output file(s): %s"%(outFiles))
    
     #now we read the calibration parameter file
     integOpts = IntegOptions()
@@ -563,20 +563,20 @@ if __name__=="__main__":
         log.info("Processing %s"%(fname))
         log.info("t2in=%f t2f=%f size=%d step=%f"%(t2in,t2fin,size,step))
         
-        print ""
-        print "File: %s"%(fname)
+        print("")
+        print("File: %s"%(fname))
         if hasParFile:
-            print " Refined Calibration Parameters from file: %s"%(args.par)
+            print(" Refined Calibration Parameters from file: %s"%(args.par))
         else:
-            print " Refined Calibration Parameters from EDF header"
-        print " CenX(px)=%.3f CenY(px)=%.3f Dist(mm)=%.3f Wave(A)=%.4f PixSX(mm)=%.4f"%(integOpts.xcen,integOpts.ycen,integOpts.distMDmm,integOpts.wavelA,edf.pixSXmm)
+            print(" Refined Calibration Parameters from EDF header")
+        print(" CenX(px)=%.3f CenY(px)=%.3f Dist(mm)=%.3f Wave(A)=%.4f PixSX(mm)=%.4f"%(integOpts.xcen,integOpts.ycen,integOpts.distMDmm,integOpts.wavelA,edf.pixSXmm))
         if integOpts.fit2d:
-            print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [fit2d convention: 0 at 3h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
+            print(" TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [fit2d convention: 0 at 3h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim))
         else:
-            print " TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [d2dplot convention: 0 at 12h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim)
-        print " Inner/Outer Radius(Px)=%d %d (º) x/y bin= %d %d azimBins=%d radialBins=%d bkg=%.2f"%(integOpts.inRadi,integOpts.outRadi,integOpts.xbin,integOpts.xbin,integOpts.azimBins,integOpts.radialBins,integOpts.subadu)
-        print " T2ini(º)=%.4f step(º)=%.4f T2end(º)=%.4f"%(t2in+step/2,step,t2fin-step/2)
-        if(isMask):print " Mask file= %s"%(integOpts.maskf)
+            print(" TiltRot(º)=%.3f AngTilt(º)=%.3f startAzim(º)=%.4f endAzim(º)=%.4f [d2dplot convention: 0 at 12h CW+]"%(integOpts.tiltRotationIN,integOpts.angleTilt,integOpts.startAzim,integOpts.endAzim))
+        print(" Inner/Outer Radius(Px)=%d %d (º) x/y bin= %d %d azimBins=%d radialBins=%d bkg=%.2f"%(integOpts.inRadi,integOpts.outRadi,integOpts.xbin,integOpts.xbin,integOpts.azimBins,integOpts.radialBins,integOpts.subadu))
+        print(" T2ini(º)=%.4f step(º)=%.4f T2end(º)=%.4f"%(t2in+step/2,step,t2fin-step/2))
+        if(isMask):print(" Mask file= %s"%(integOpts.maskf))
 
         log.info(" tiltRot internally used = %f"%integOpts.tiltRotation)
         log.info(" startAzim endAzim internally used (ref. 12h CW+) = %f %f"%(startAzim,endAzim))
@@ -713,10 +713,10 @@ if __name__=="__main__":
                 else:
                     fout.write(" %.7E  %.7E\n"%(round(t2,4), inten)) #no esd
             fout.close()
-            print "==> Output DAT file (xye format): %s"%(outFiles[i])
+            print("==> Output DAT file (xye format): %s"%(outFiles[i]))
             log.info("%s dat file written"%(outFiles[i]))
         
-    print ""
-    print "=== END EXECUTION (total time %.4f sec) ==="%(time.time()-ts)
-    print ""
+    print("")
+    print("=== END EXECUTION (total time %.4f sec) ==="%(time.time()-ts))
+    print("")
     log.info(" Total execution time: %.4f sec"%(time.time() - ts))
