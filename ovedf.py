@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Created on Mon Oct 17 12:00:00 2016
@@ -39,7 +39,10 @@ import math
 import glob
 import logging as log
 import numpy as np
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    log.warning("matplotlib missing, no plotting capabilities can be used")
 
 __author__ = "Oriol Vallcorba"
 __email__ = "ovallcorba@cells.es"
