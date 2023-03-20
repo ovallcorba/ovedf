@@ -80,13 +80,18 @@ class EDFdata:
     def readFile(self, edfFilename):
         """Reads a EDF file and populates the data"""
         t0 = time.time()
-        fedf = open(edfFilename, "r")
+
+        with open(edfFilename, "rb") as fedf:
+            header = fedf.read().split(b'}')[0]
+        log.debug("header={}".format(len(header)))
+        header = header.decode().split('\n')
+
         self.filename = fedf.name
         size = -1
         lcount = 0
         maxheaderLines = 60
         try:
-            for line in fedf:
+            for line in header:
                 if lcount >= maxheaderLines:
                     break
                 if line.strip().startswith("}"):
@@ -150,7 +155,6 @@ class EDFdata:
                 lcount = lcount + 1
         finally:
             log.debug("finally executed")
-            fedf.close()
 
         # now the binary part
         filesize = os.path.getsize(edfFilename)
@@ -163,14 +167,14 @@ class EDFdata:
         self.t2XY = np.empty([self.dimx, self.dimy])
         self.azim = np.empty([self.dimx, self.dimy])
 
-        fedf = open(edfFilename, "rb")
-        header = fedf.read(headersize)
-        log.debug(header)
-        try:
-            self.intenXY = np.fromfile(fedf, np.uint16)
-            self.intenXY = self.intenXY.reshape(self.dimx, self.dimy)
-        finally:
-            fedf.close()
+        with open(edfFilename, "rb") as fedf:
+            header = fedf.read(headersize)
+            log.debug(header)
+            try:
+                self.intenXY = np.fromfile(fedf, np.uint16)
+                self.intenXY = self.intenXY.reshape(self.dimx, self.dimy)
+            except Exception as e:
+                log.error(e)
         log.info(" EDF reading: %.4f sec" % (time.time() - t0))
 
     def readBINFile(self, binFilename):
