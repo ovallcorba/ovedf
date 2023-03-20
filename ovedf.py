@@ -7,7 +7,9 @@ Created on Mon Oct 17 12:00:00 2016
 
 ---------------
 Changelog
-Current (last change 170320 15.50h):
+Current (last change 230320 14.30h):
+ - Change output extension from .dat to .xye
+ - Run 2to3
  - Use EDF header refinement values if no par file is supplied
  - Mask in BIN format (image with all I=0 except mask pixels with I=-1)
  - D2Dplot or Fit2d convention (argument option)
@@ -473,7 +475,7 @@ if __name__ == "__main__":
         "-o",
         "--output",
         default="",
-        help="1D output file only when processing one file (default: filename.dat",
+        help="1D output file only when processing one file (default: filename.xye",
     )
     parser.add_argument(
         "-s",
@@ -516,14 +518,14 @@ if __name__ == "__main__":
     if len(args.filenames) == 1:
         if args.output == "":
             ipunt = args.filenames[0].rfind(".")
-            outFiles.append(args.filenames[0][0:ipunt] + args.suffix + ".dat")
+            outFiles.append(args.filenames[0][0:ipunt] + args.suffix + ".xye")
         else:
             outFiles.append(args.output)
     else:
         # same names as input but with dat extension
         for fname in files:
             ipunt = fname.rfind(".")
-            outFiles.append(fname[0:ipunt] + args.suffix + ".dat")
+            outFiles.append(fname[0:ipunt] + args.suffix + ".xye")
     log.info("output file(s): %s" % outFiles)
     print("  Output file(s): %s" % (outFiles))
 
@@ -811,7 +813,7 @@ if __name__ == "__main__":
                 if k == 0:
                     iniName = outFiles[i]
                 ipunt = iniName.rfind(".")
-                outFiles[i] = iniName[0:ipunt] + "_bin%02d.dat" % (k)
+                outFiles[i] = iniName[0:ipunt] + "_bin%02d.xye" % (k)
             fout = open(outFiles[i], "w")
             fout.write("#%s  COM = %s\n" % (fname, edf.comment))
             fout.write(
